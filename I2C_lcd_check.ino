@@ -1,5 +1,6 @@
 //Simple Arduino code for checking I2C module works properly
 // Connect SDA to A4 pin, SCL to A5 pin of Arduino Uno
+// Also try rotating potentiometer knob on I2C module if it doesn't display anything
 
 #include <Wire.h> 
 #include <LiquidCrystal_I2C.h>
