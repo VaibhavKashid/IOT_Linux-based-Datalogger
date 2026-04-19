@@ -1,1 +1,0 @@
-//Main C code for ESP32 project
