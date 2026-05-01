@@ -1,6 +1,9 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 //  WiFi Credentials
 const char* ssid = "Vaibhav";
 const char* password = "12345678";
@@ -47,7 +50,11 @@ void reconnect() {
 }
 
 void setup() {
-  Serial.begin(9600);   // UART0 for receiving + debugging
+  Serial.begin(9600);  // UART0 for receiving + debugging
+  Wire.begin(21, 22);  // SDA, SCL for ESP32
+  lcd.begin(16, 2);    // Initialize LCD
+  lcd.backlight();     // Turn ON backlight
+  lcd.setCursor(0, 0);
 
   setup_wifi();
   client.setServer(mqtt_server, 1883);
@@ -73,11 +80,30 @@ void loop() {
 
         //  Publish to MQTT
         client.publish("vaibhav/esp32/data", inputLine.c_str());
-      }
 
-      inputLine = "";
-    } else {
-      inputLine += c;
+
+        if (inputLine.startsWith("S1,")) {
+          float v, i, pf, p;
+          sscanf(inputLine.c_str(), "S1,%f,%f,%f,%f", &v, &i, &pf, &p);
+          lcd.clear();
+          lcd.setCursor(0, 0);
+          lcd.print("V:");
+          lcd.print(v);
+          lcd.setCursor(9, 0);
+          lcd.print("I:");
+          lcd.print(i);
+          lcd.setCursor(0, 1);
+          lcd.print("PF:");
+          lcd.print(pf);
+          lcd.setCursor(9, 1);
+          lcd.print("P:");
+          lcd.print(p);
+        }
+      }
+      inputLine = ""; 
     }
+    else {
+      inputLine += c;
+     }
   }
 }
