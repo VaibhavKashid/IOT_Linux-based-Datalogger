@@ -1,5 +1,5 @@
 //Connect I2C module to 16X2 display
-//Connect SCL pin to D22 and SCL pin to D21
+//Connect SCL pin to D22 and SDA pin to D21
 //Also connect Vcc to Vin and Gnd to Gnd
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
