@@ -1,5 +1,5 @@
-# Fetches data via MQTT and logs by adding timestamp and converting into json format and store in /usr/bin/updates/JSON
-# Also after 4 jsons are created, convertes this json into .csv format and store at /usr/bin/updates/CSV
+# Fetches data via MQTT and logs incoming data by adding timestamp, converting into json format and storing in /usr/bin/updates/JSON
+# Also after 4 jsons are generated, it converts these jsons into .csv format and store at /usr/bin/updates/CSV
 
 import paho.mqtt.client as mqtt
 import json
