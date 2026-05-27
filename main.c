@@ -1,26 +1,36 @@
+//To be uploaded on ESP32 while interfaced to 16X2 LCD display using I2C
+//Receives data through UART2
+// Implemented RTOS
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+#define RXD2 16
+#define TXD2 17
 
-HardwareSerial mySerial(2);  // UART2 --> Connect Arduino's Tx pin to ESP's RX2 pin
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+HardwareSerial mySerial(2);
 
 const char* ssid = "Vaibhav";
 const char* password = "12345678";
 
-// MQTT Broker
 const char* mqtt_server = "broker.hivemq.com";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-String inputLine = "";
+QueueHandle_t mqttQueue;
+
+// Structure for queue
+typedef struct {
+  char message[100];
+} mqttMessage;
 
 void setup_wifi() {
 
-  Serial.println("Connecting to WiFi...");
+  Serial.println("Connecting WiFi");
 
   WiFi.begin(ssid, password);
 
@@ -30,8 +40,7 @@ void setup_wifi() {
     Serial.print(".");
   }
 
-  Serial.println("\nWiFi Connected!");
-  Serial.print("IP Address: ");
+  Serial.println("\nWiFi Connected");
   Serial.println(WiFi.localIP());
 }
 
@@ -39,25 +48,26 @@ void reconnect() {
 
   while (!client.connected()) {
 
-    Serial.print("Connecting to MQTT...");
+    Serial.print("Connecting MQTT...");
 
     if (client.connect("ESP32_Client")) {
 
-      Serial.println("Connected!");
+      Serial.println("Connected");
 
     } else {
 
-      Serial.print("Failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" retrying...");
+      Serial.print("Failed rc=");
+      Serial.println(client.state());
 
       vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
   }
 }
 
-// TASK 1 : WiFi + MQTT  --> CORE 0
+// ================= MQTT TASK =================
 void mqttTask(void * parameter) {
+
+  mqttMessage rxMsg;
 
   setup_wifi();
 
@@ -71,105 +81,124 @@ void mqttTask(void * parameter) {
 
     client.loop();
 
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
-}
+    // Receive data from queue
+    if (xQueueReceive(mqttQueue, &rxMsg, 10) == pdPASS) {
 
-// TASK 2 : UART2 + LCD  --> CORE 1
-void serialTask(void * parameter) {
+      Serial.print("Publishing: ");
+      Serial.println(rxMsg.message);
 
-  while (1) {
-
-    // Read UART2 data
-    while (mySerial.available()) {
-
-      char c = mySerial.read();
-
-      if (c == '\n') {
-
-        inputLine.trim();
-
-        if (inputLine.length() > 0) {
-
-          Serial.print("Publishing: ");
-          Serial.println(inputLine);
-
-          // Publish MQTT
-          client.publish("vaibhav/esp32/data",
-                         inputLine.c_str());
-
-          // LCD Display
-          if (inputLine.startsWith("S1,")) {
-
-            float v, i, pf, p;
-
-            sscanf(inputLine.c_str(),
-                   "S1,%f,%f,%f,%f",
-                   &v, &i, &pf, &p);
-
-            lcd.clear();
-
-            lcd.setCursor(0, 0);
-            lcd.print("V:");
-            lcd.print(v);
-
-            lcd.setCursor(9, 0);
-            lcd.print("I:");
-            lcd.print(i);
-
-            lcd.setCursor(0, 1);
-            lcd.print("PF:");
-            lcd.print(pf);
-
-            lcd.setCursor(9, 1);
-            lcd.print("P:");
-            lcd.print(p);
-          }
-        }
-
-        inputLine = "";
-      }
-
-      else {
-
-        inputLine += c;
-      }
+      client.publish("vaibhav/esp32/data",
+                     rxMsg.message);
     }
 
     vTaskDelay(10 / portTICK_PERIOD_MS);
   }
 }
 
+// ================= UART + LCD TASK =================
+void serialTask(void * parameter) {
+
+  char inputLine[100];
+  int index = 0;
+
+  while (1) {
+
+    while (mySerial.available()) {
+
+      char c = mySerial.read();
+
+      // End of line
+      if (c == '\n') {
+
+        inputLine[index] = '\0';
+
+        if (strlen(inputLine) > 0) {
+
+          mqttMessage txMsg;
+
+          strcpy(txMsg.message, inputLine);
+
+          // Send to MQTT queue
+          xQueueSend(mqttQueue, &txMsg, portMAX_DELAY);
+
+          // ===== LCD Display =====
+          if (strncmp(inputLine, "S1,", 3) == 0) {
+
+            float v, i, pf, p;
+
+            sscanf(inputLine,
+                   "S1,%f,%f,%f,%f",
+                   &v, &i, &pf, &p);
+
+            // Instead of lcd.clear()
+            lcd.setCursor(0, 0);
+            lcd.print("V:");
+            lcd.print(v, 1);
+            lcd.print("   ");
+
+            lcd.setCursor(9, 0);
+            lcd.print("I:");
+            lcd.print(i, 1);
+            lcd.print("   ");
+
+            lcd.setCursor(0, 1);
+            lcd.print("PF:");
+            lcd.print(pf, 2);
+            lcd.print(" ");
+
+            lcd.setCursor(9, 1);
+            lcd.print("P:");
+            lcd.print(p, 1);
+            lcd.print("   ");
+          }
+        }
+
+        index = 0;
+      }
+
+      else {
+
+        // Prevent buffer overflow
+        if (index < sizeof(inputLine) - 1) {
+
+          inputLine[index++] = c;
+        }
+      }
+    }
+
+    vTaskDelay(5 / portTICK_PERIOD_MS);
+  }
+}
+
 void setup() {
 
-  // UART0 for debugging
-  Serial.begin(9600);
+  Serial.begin(115200);
 
-  // UART2 for external device
-  mySerial.begin(9600, SERIAL_8N1, 16, 17);
+  mySerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
 
-  // I2C
   Wire.begin(21, 22);
 
-  // LCD
   lcd.begin(16, 2);
   lcd.backlight();
 
   lcd.setCursor(0, 0);
   lcd.print("System Starting");
 
-  // Create MQTT Task on Core 0
+  // Create Queue
+  mqttQueue = xQueueCreate(10, sizeof(mqttMessage));
+
+  // MQTT Task
   xTaskCreatePinnedToCore(
-    mqttTask,          // Task Function
-    "MQTT_Task",       // Task Name
-    10000,             // Stack Size
-    NULL,              // Parameters
-    1,                 // Priority
-    NULL,              // Task Handle
-    0                  // Core 0
+    mqttTask,
+    "MQTT_Task",
+    10000,
+    NULL,
+    1,
+    NULL,
+    0
   );
 
-  // Create UART/LCD Task on Core 1
+  // UART Task
   xTaskCreatePinnedToCore(
     serialTask,
     "Serial_Task",
@@ -177,7 +206,7 @@ void setup() {
     NULL,
     1,
     NULL,
-    1                  // Core 1
+    1
   );
 }
 
