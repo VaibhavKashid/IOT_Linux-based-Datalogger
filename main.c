@@ -17,199 +17,383 @@ const char* ssid = "Vaibhav";
 const char* password = "12345678";
 
 const char* mqtt_server = "broker.hivemq.com";
+const char* mqtt_topic = "vaibhav/esp32/data";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
 QueueHandle_t mqttQueue;
 
-// Structure for queue
-typedef struct {
-  char message[100];
+// ====================================================
+// Queue Structure
+// ====================================================
+
+typedef struct
+{
+    char message[600];
 } mqttMessage;
 
-void setup_wifi() {
+// ====================================================
+// LCD Storage
+// ====================================================
 
-  Serial.println("Connecting WiFi");
+struct MeterData
+{
+    float v1;
+    float i1;
+    float freq;
+};
 
-  WiFi.begin(ssid, password);
+MeterData meter[5];
 
-  while (WiFi.status() != WL_CONNECTED) {
+// ====================================================
+// WiFi
+// ====================================================
 
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-    Serial.print(".");
-  }
+void setup_wifi()
+{
+    Serial.println("Connecting WiFi");
 
-  Serial.println("\nWiFi Connected");
-  Serial.println(WiFi.localIP());
-}
+    WiFi.begin(ssid, password);
 
-void reconnect() {
-
-  while (!client.connected()) {
-
-    Serial.print("Connecting MQTT...");
-
-    if (client.connect("ESP32_Client")) {
-
-      Serial.println("Connected");
-
-    } else {
-
-      Serial.print("Failed rc=");
-      Serial.println(client.state());
-
-      vTaskDelay(2000 / portTICK_PERIOD_MS);
-    }
-  }
-}
-
-// ================= MQTT TASK =================
-void mqttTask(void * parameter) {
-
-  mqttMessage rxMsg;
-
-  setup_wifi();
-
-  client.setServer(mqtt_server, 1883);
-
-  while (1) {
-
-    if (!client.connected()) {
-      reconnect();
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+        Serial.print(".");
     }
 
-    client.loop();
-
-    // Receive data from queue
-    if (xQueueReceive(mqttQueue, &rxMsg, 10) == pdPASS) {
-
-      Serial.print("Publishing: ");
-      Serial.println(rxMsg.message);
-
-      client.publish("vaibhav/esp32/data",
-                     rxMsg.message);
-    }
-
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
+    Serial.println();
+    Serial.println("WiFi Connected");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
 }
 
-// ================= UART + LCD TASK =================
-void serialTask(void * parameter) {
+// ====================================================
+// MQTT Reconnect
+// ====================================================
 
-  char inputLine[100];
-  int index = 0;
+void reconnect()
+{
+    while (!client.connected())
+    {
+        Serial.print("Connecting MQTT...");
 
-  while (1) {
+        if (client.connect("ESP32_Client"))
+        {
+            Serial.println("Connected");
+        }
+        else
+        {
+            Serial.print("Failed rc=");
+            Serial.println(client.state());
 
-    while (mySerial.available()) {
+            vTaskDelay(2000 / portTICK_PERIOD_MS);
+        }
+    }
+}
 
-      char c = mySerial.read();
+// ====================================================
+// MQTT Task - Core 0
+// ====================================================
 
-      // End of line
-      if (c == '\n') {
+void mqttTask(void * parameter)
+{
+    mqttMessage rxMsg;
 
-        inputLine[index] = '\0';
+    setup_wifi();
 
-        if (strlen(inputLine) > 0) {
+    client.setServer(mqtt_server, 1883);
 
-          mqttMessage txMsg;
+    // Increase MQTT packet size
+    client.setBufferSize(1024);
 
-          strcpy(txMsg.message, inputLine);
+    while (1)
+    {
+        if (!client.connected())
+        {
+            reconnect();
+        }
 
-          // Send to MQTT queue
-          xQueueSend(mqttQueue, &txMsg, portMAX_DELAY);
+        client.loop();
 
-          // ===== LCD Display =====
-          if (strncmp(inputLine, "S1,", 3) == 0) {
+        if (xQueueReceive(mqttQueue, &rxMsg, 10) == pdPASS)
+        {
+            Serial.print("MQTT Connected: ");
+            Serial.println(client.connected());
 
-            float v, i, pf, p;
+            Serial.print("Payload Length: ");
+            Serial.println(strlen(rxMsg.message));
 
-            sscanf(inputLine,
-                   "S1,%f,%f,%f,%f",
-                   &v, &i, &pf, &p);
+            bool result = client.publish(
+                mqtt_topic,
+                rxMsg.message
+            );
 
-            // Instead of lcd.clear()
+            Serial.print("Publish Result: ");
+            Serial.println(result ? "SUCCESS" : "FAILED");
+
+            if (!result)
+            {
+                Serial.print("MQTT State: ");
+                Serial.println(client.state());
+            }
+
+            Serial.println("Published Payload:");
+            Serial.println(rxMsg.message);
+        }
+
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
+// ====================================================
+// UART + LCD Task - Core 1
+// ====================================================
+
+void serialTask(void * parameter)
+{
+    char inputLine[250];
+    int index = 0;
+
+    uint32_t lastLCDUpdate = 0;
+    uint8_t lcdMeter = 1;
+
+    while (1)
+    {
+        while (mySerial.available())
+        {
+            char c = mySerial.read();
+
+            if (c == '\r')
+                continue;
+
+            if (c == '\n')
+            {
+                inputLine[index] = '\0';
+
+                Serial.print("UART RX: ");
+                Serial.println(inputLine);
+
+                if (strlen(inputLine) > 0)
+                {
+                    int devType;
+
+                    float dc_v, dc_i;
+                    float v1, v2, v3;
+                    float v12, v23, v31;
+                    float i1, i2, i3;
+                    float pf1, pf2, pf3;
+                    float var1, var2, var3;
+                    float freq;
+
+                    int fields = sscanf(
+                        inputLine,
+                        "%d,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f",
+                        &devType,
+                        &dc_v,
+                        &dc_i,
+                        &v1,
+                        &v2,
+                        &v3,
+                        &v12,
+                        &v23,
+                        &v31,
+                        &i1,
+                        &i2,
+                        &i3,
+                        &pf1,
+                        &pf2,
+                        &pf3,
+                        &var1,
+                        &var2,
+                        &var3,
+                        &freq
+                    );
+
+                    Serial.print("Fields Parsed = ");
+                    Serial.println(fields);
+
+                    if (fields == 19)
+                    {
+                        // Store data for LCD
+                        if (devType >= 1 && devType <= 4)
+                        {
+                            meter[devType].v1 = v1;
+                            meter[devType].i1 = i1;
+                            meter[devType].freq = freq;
+                        }
+
+                        char jsonPayload[600];
+
+                        snprintf(
+                            jsonPayload,
+                            sizeof(jsonPayload),
+
+                            "{"
+                            "\"devType\":%d,"
+                            "\"dc_v\":%.2f,"
+                            "\"dc_i\":%.2f,"
+                            "\"v1\":%.2f,"
+                            "\"v2\":%.2f,"
+                            "\"v3\":%.2f,"
+                            "\"v12\":%.2f,"
+                            "\"v23\":%.2f,"
+                            "\"v31\":%.2f,"
+                            "\"i1\":%.2f,"
+                            "\"i2\":%.2f,"
+                            "\"i3\":%.2f,"
+                            "\"pf1\":%.2f,"
+                            "\"pf2\":%.2f,"
+                            "\"pf3\":%.2f,"
+                            "\"var1\":%.2f,"
+                            "\"var2\":%.2f,"
+                            "\"var3\":%.2f,"
+                            "\"freq\":%.2f"
+                            "}",
+
+                            devType,
+                            dc_v,
+                            dc_i,
+                            v1,
+                            v2,
+                            v3,
+                            v12,
+                            v23,
+                            v31,
+                            i1,
+                            i2,
+                            i3,
+                            pf1,
+                            pf2,
+                            pf3,
+                            var1,
+                            var2,
+                            var3,
+                            freq
+                        );
+
+                        mqttMessage txMsg;
+
+                        strcpy(
+                            txMsg.message,
+                            jsonPayload
+                        );
+
+                        Serial.println("Queue Send");
+
+                        xQueueSend(
+                            mqttQueue,
+                            &txMsg,
+                            portMAX_DELAY
+                        );
+                    }
+                    else
+                    {
+                        Serial.println("ERROR: Expected 19 fields");
+                    }
+                }
+
+                index = 0;
+            }
+            else
+            {
+                if (index < sizeof(inputLine) - 1)
+                {
+                    inputLine[index++] = c;
+                }
+            }
+        }
+
+        // ====================================================
+        // LCD UPDATE EVERY 2 SECONDS
+        // ====================================================
+
+        if (millis() - lastLCDUpdate >= 2000)
+        {
+            lastLCDUpdate = millis();
+
+            lcd.clear();
+
             lcd.setCursor(0, 0);
-            lcd.print("V:");
-            lcd.print(v, 1);
-            lcd.print("   ");
-
-            lcd.setCursor(9, 0);
-            lcd.print("I:");
-            lcd.print(i, 1);
-            lcd.print("   ");
+            lcd.print("M:");
+            lcd.print(lcdMeter);
+            lcd.print(" V:");
+            lcd.print(meter[lcdMeter].v1, 0);
 
             lcd.setCursor(0, 1);
-            lcd.print("PF:");
-            lcd.print(pf, 2);
-            lcd.print(" ");
+            lcd.print("I:");
+            lcd.print(meter[lcdMeter].i1, 1);
 
-            lcd.setCursor(9, 1);
-            lcd.print("P:");
-            lcd.print(p, 1);
-            lcd.print("   ");
-          }
+            lcdMeter++;
+
+            if (lcdMeter > 4)
+            {
+                lcdMeter = 1;
+            }
         }
 
-        index = 0;
-      }
-
-      else {
-
-        // Prevent buffer overflow
-        if (index < sizeof(inputLine) - 1) {
-
-          inputLine[index++] = c;
-        }
-      }
+        vTaskDelay(5 / portTICK_PERIOD_MS);
     }
-
-    vTaskDelay(5 / portTICK_PERIOD_MS);
-  }
 }
 
-void setup() {
+// ====================================================
+// Setup
+// ====================================================
 
-  Serial.begin(115200);
+void setup()
+{
+    // UART0 -> Serial Monitor
+    Serial.begin(115200);
 
-  mySerial.begin(9600, SERIAL_8N1, RXD2, TXD2);
+    // UART2 -> Arduino
+    mySerial.begin(
+        115200,
+        SERIAL_8N1,
+        RXD2,
+        TXD2
+    );
 
-  Wire.begin(21, 22);
+    Wire.begin(21, 22);
 
-  lcd.begin(16, 2);
-  lcd.backlight();
+    lcd.begin(16, 2);
+    lcd.backlight();
 
-  lcd.setCursor(0, 0);
-  lcd.print("System Starting");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("System Starting");
 
-  // Create Queue
-  mqttQueue = xQueueCreate(10, sizeof(mqttMessage));
+    mqttQueue = xQueueCreate(
+        10,
+        sizeof(mqttMessage)
+    );
 
-  // MQTT Task
-  xTaskCreatePinnedToCore(
-    mqttTask,
-    "MQTT_Task",
-    10000,
-    NULL,
-    1,
-    NULL,
-    0
-  );
+    // MQTT Task on Core 0
+    xTaskCreatePinnedToCore(
+        mqttTask,
+        "MQTT_Task",
+        10000,
+        NULL,
+        1,
+        NULL,
+        0
+    );
 
-  // UART Task
-  xTaskCreatePinnedToCore(
-    serialTask,
-    "Serial_Task",
-    10000,
-    NULL,
-    1,
-    NULL,
-    1
-  );
+    // UART + LCD Task on Core 1
+    xTaskCreatePinnedToCore(
+        serialTask,
+        "Serial_Task",
+        10000,
+        NULL,
+        1,
+        NULL,
+        1
+    );
 }
 
-void loop() {
+// ====================================================
+// Loop
+// ====================================================
 
+void loop()
+{
 }
